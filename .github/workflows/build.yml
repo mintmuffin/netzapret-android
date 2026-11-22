@@ -46,7 +46,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
       - name: Build Windows exe with PyInstaller
-        run: pyinstaller netzapret.spec -y --distpath dist/win
+        run: |
+          pyinstaller --onedir --windowed --noconfirm --name netzapret --distpath dist/win --hidden-import=pygame --hidden-import=pygame.locals src/main.py
       - name: Zip portable folder
         run: cd dist/win && 7z a netzapret-windows.zip netzapret
       - name: Upload artifact
