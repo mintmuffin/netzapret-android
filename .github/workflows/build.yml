@@ -2,7 +2,8 @@ name: Build portable release
 
 on:
   push:
-    branches: [main]
+    branches: [main, arena/403fee8f-netzapret-android]
+  workflow_dispatch:
   release:
     types: [published]
 
@@ -29,8 +30,36 @@ jobs:
           name: netzapret-linux
           path: dist/linux/netzapret-linux.zip
 
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Wine + Windows Python
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y wine p7zip-full curl
+          curl -L -o python-embed.zip \
+            https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip
+          7z x python-embed.zip -owinpython >/dev/null
+          echo "WINPY=$PWD/winpython" >> $GITHUB_ENV
+      - name: Install Python deps under Wine
+        run: |
+          curl -L -o get-pip.py https://bootstrap.pypa.io/get-pip.py
+          wine "$WINPY/python.exe" get-pip.py
+          wine "$WINPY/python.exe" -m pip install --upgrade pip
+          wine "$WINPY/python.exe" -m pip install pygame numpy pyinstaller
+      - name: Build Windows exe with PyInstaller (via Wine)
+        run: wine "$WINPY/python.exe" -m PyInstaller netzapret.spec -y --distpath dist/win
+      - name: Zip portable folder
+        run: cd dist/win && zip -r netzapret-windows.zip netzapret
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: netzapret-windows
+          path: dist/win/netzapret-windows.zip
+
   release:
-    needs: build-linux
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
