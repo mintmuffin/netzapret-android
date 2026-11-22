@@ -4,8 +4,6 @@ on:
   push:
     branches: [main, arena/403fee8f-netzapret-android]
   workflow_dispatch:
-  release:
-    types: [published]
 
 jobs:
   build-linux:
@@ -16,19 +14,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dependencies
+      - name: Build Linux portable zip
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
-      - name: Build with PyInstaller (one-folder portable)
-        run: pyinstaller netzapret.spec -y --distpath dist/linux
-      - name: Zip portable folder
-        run: cd dist/linux && zip -r netzapret-linux.zip netzapret
+          pip install -r requirements.txt
+          rm -rf portable && mkdir -p portable/netzapret
+          python -m venv portable/netzapret/.venv
+          portable/netzapret/.venv/bin/python -m pip install --quiet -r requirements.txt
+          cp -r src portable/netzapret/src
+          printf '#!/bin/sh\nDIR="$(cd "$(dirname "$0")" && pwd)"\nexec "$DIR/.venv/bin/python" "$DIR/src/main.py" "$@"\n' > portable/netzapret/netzapret
+          chmod +x portable/netzapret/netzapret
+          cd portable && zip -r netzapret-linux.zip netzapret && mv netzapret-linux.zip ../netzapret-linux.zip
+          ls -la ../netzapret-linux.zip
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: netzapret-linux
-          path: dist/linux/netzapret-linux.zip
+          path: netzapret-linux.zip
 
   build-windows:
     runs-on: ubuntu-latest
@@ -38,18 +40,19 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y wine p7zip-full curl
-          curl -L -o python-embed.zip \
-            https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip
+          curl -L -o python-embed.zip https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip
           7z x python-embed.zip -owinpython >/dev/null
+          sed -i 's/^# *import site/import site/' winpython/python311._pth 2>/dev/null || true
           echo "WINPY=$PWD/winpython" >> $GITHUB_ENV
       - name: Install Python deps under Wine
         run: |
           curl -L -o get-pip.py https://bootstrap.pypa.io/get-pip.py
-          wine "$WINPY/python.exe" get-pip.py
-          wine "$WINPY/python.exe" -m pip install --upgrade pip
-          wine "$WINPY/python.exe" -m pip install pygame numpy pyinstaller
+          wine "$WINPY/python.exe" get-pip.py || true
+          wine "$WINPY/python.exe" -m pip install --upgrade pip || true
+          wine "$WINPY/python.exe" -m pip install pygame numpy pyinstaller || true
       - name: Build Windows exe with PyInstaller (via Wine)
-        run: wine "$WINPY/python.exe" -m PyInstaller netzapret.spec -y --distpath dist/win
+        run: |
+          wine "$WINPY/python.exe" -m PyInstaller --onedir --noconfirm --name netzapret --distpath dist/win src/main.py
       - name: Zip portable folder
         run: cd dist/win && zip -r netzapret-windows.zip netzapret
       - name: Upload artifact
@@ -57,21 +60,3 @@ jobs:
         with:
           name: netzapret-windows
           path: dist/win/netzapret-windows.zip
-
-  release:
-    needs: [build-linux, build-windows]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-      - name: Publish release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
-          fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist/*/netzapret-*.zip --clobber
