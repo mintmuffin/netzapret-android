@@ -75,6 +75,9 @@ class Country:
     manpower: float = 100.0
     relations: Dict[str, float] = field(default_factory=dict)
     allies: Set[str] = field(default_factory=set)
+    guarantees: Set[str] = field(default_factory=set)  # countries we defend if attacked
+    guaranteed_by: Set[str] = field(default_factory=set)  # countries defending us
+    royal_marriages: Set[str] = field(default_factory=set)  # house ties
     vassal_of: Optional[str] = None
     vassals: Set[str] = field(default_factory=set)
     ai_enabled: bool = True

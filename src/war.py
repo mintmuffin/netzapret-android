@@ -6,6 +6,14 @@ from typing import Dict, List, Optional, Set, Tuple
 from core import clamp
 from world import Army, Country, Front, War, World
 
+# casus belli: name -> (war score multiplier, description)
+CB_TABLE = {
+    "conquest": (1.0, "Conquest"),
+    "holy_war": (1.3, "Holy War"),
+    "ideology_war": (1.2, "Ideology War"),
+    "reconquest": (1.1, "Reconquest"),
+}
+
 
 def start_war(world: World, attacker: str, defender: str, cb: str = "conquest") -> Optional[str]:
     if attacker == defender:
@@ -23,24 +31,37 @@ def start_war(world: World, attacker: str, defender: str, cb: str = "conquest") 
         cd.relations[attacker] = clamp(cd.relations.get(attacker, 0) - 40, -100, 100)
         cd.allies.discard(attacker)
 
+    # allies join
     for tag, c in list(world.countries.items()):
         if tag in (attacker, defender) or not c.ai_enabled:
             continue
         if attacker in c.allies:
-            _join_war(world, wid, tag, attacker)
+            _join_war(world, wid, tag, attacker_side=True)
         elif defender in c.allies:
-            _join_war(world, wid, tag, defender)
+            _join_war(world, wid, tag, attacker_side=False)
+    # guarantees: guarantors of the defender join on defender's side
+    if cd:
+        for guarantor in list(cd.guaranteed_by):
+            if guarantor not in (attacker, defender):
+                gc = world.country_obj(guarantor)
+                if gc and gc.ai_enabled:
+                    _join_war(world, wid, guarantor, attacker_side=False)
+                    # breaking a guarantee hurts relations with the aggressor
+                    gc.relations[attacker] = clamp(gc.relations.get(attacker, 0) - 25, -100, 100)
 
     _make_fronts(world, war)
-    world.add_log(f"WAR: {ca.name if ca else attacker} declares war on {cd.name if cd else defender} ({cb})")
+    cb_name = CB_TABLE.get(cb, ("conquest", "Conquest"))[1]
+    world.add_log(f"WAR: {ca.name if ca else attacker} declares war on "
+                  f"{cd.name if cd else defender} ({cb_name})")
     return wid
 
 
-def _join_war(world: World, wid: str, tag: str, side: str) -> None:
+def _join_war(world: World, wid: str, tag: str, attacker_side: bool) -> None:
     war = world.wars[wid]
     c = world.country_obj(tag)
     if not c:
         return
+    side = "attacker" if attacker_side else "defender"
     world.add_log(f"{c.name} joins the war on {side} side")
 
 
@@ -69,8 +90,9 @@ def tick_armies(world: World) -> None:
     for war in world.wars.values():
         if not war.active:
             continue
-        score = len(war.occupied) * 2.0
-        score += sum(world.wars[war.id].battles_won.get(side, 0) * 1.0
+        mult, _ = CB_TABLE.get(war.cb, CB_TABLE["conquest"])
+        score = len(war.occupied) * 2.0 * mult
+        score += sum(world.wars[war.id].battles_won.get(side, 0) * 1.5 * mult
                      for side in (war.attacker, war.defender))
         war.war_score = score
 
@@ -206,6 +228,9 @@ def peace_options(world: World, war_id: str) -> List[dict]:
     if not sc or sc not in (war.attacker, war.defender):
         return []
     score = war.war_score
+    enemy = war.defender if sc == war.attacker else war.attacker
+    ec = world.country_obj(enemy)
+    c = world.country_obj(sc)
     opts: List[dict] = []
     if score >= 5:
         opts.append({"kind": "white_peace", "label": "White peace", "score": 0})
@@ -215,12 +240,21 @@ def peace_options(world: World, war_id: str) -> List[dict]:
                 reg = world.regions[rid]
                 opts.append({"kind": "annex", "label": f"Annex region {rid}", "score": 10,
                              "region": rid, "target": reg.owner})
+    if score >= 40 and ec:
+        opts.append({"kind": "release_vassal", "label": f"Release {ec.name} as vassal", "score": 15,
+                     "target": enemy})
     if score >= 50:
-        opts.append({"kind": "vassalize", "label": "Vassalize enemy", "score": 30,
-                     "target": war.defender if sc == war.attacker else war.attacker})
-    if score >= 80:
-        opts.append({"kind": "force_religion", "label": "Force religion", "score": 40,
-                     "target": war.defender if sc == war.attacker else war.attacker})
+        opts.append({"kind": "vassalize", "label": f"Vassalize {ec.name if ec else enemy}", "score": 30,
+                     "target": enemy})
+    if score >= 70 and ec:
+        opts.append({"kind": "force_religion", "label": f"Force {ec.religion}-> {c.religion if c else ''}", "score": 40,
+                     "target": enemy})
+    if score >= 90 and ec:
+        opts.append({"kind": "force_ideology", "label": f"Force ideology ({c.ideology if c else ''})", "score": 50,
+                     "target": enemy})
+    if score >= 60 and ec:
+        opts.append({"kind": "reparations", "label": f"Demand reparations from {ec.name if ec else enemy}", "score": 20,
+                     "target": enemy})
     return opts
 
 
@@ -230,6 +264,7 @@ def apply_peace(world: World, war_id: str, terms: dict) -> None:
     enemy = war.defender if sc == war.attacker else war.attacker
     c = world.country_obj(sc)
     ec = world.country_obj(enemy)
+    mult, cb_name = CB_TABLE.get(war.cb, CB_TABLE["conquest"])
 
     if terms["kind"] == "white_peace":
         world.add_log(f"Peace: white peace between {c.name if c else sc} and {ec.name if ec else enemy}")
@@ -248,12 +283,40 @@ def apply_peace(world: World, war_id: str, terms: dict) -> None:
         if c:
             c.vassals.add(enemy)
         world.add_log(f"Peace: {ec.name if ec else enemy} becomes vassal of {c.name if c else sc}")
+    elif terms["kind"] == "release_vassal":
+        if ec and ec.vassal_of == sc:
+            ec.vassal_of = None
+            if c:
+                c.vassals.discard(enemy)
+            world.add_log(f"Peace: {ec.name if ec else enemy} released from vassalage")
     elif terms["kind"] == "force_religion":
         if ec:
-            ec.religion = world.countries[sc].religion if c else ""
-        world.add_log(f"Peace: religion of {ec.name if ec else enemy} forced")
+            new_rel = world.countries[sc].religion if c else ""
+            old_rel = ec.religion
+            ec.religion = new_rel
+            # seed the enemy's regions with the new religion
+            for reg in world.regions.values():
+                if reg.owner == enemy and old_rel in reg.religion:
+                    reg.religion = {new_rel: 1.0}
+            world.add_log(f"Peace: religion of {ec.name if ec else enemy} forced to {new_rel}")
+    elif terms["kind"] == "force_ideology":
+        if ec:
+            old_ide = ec.ideology
+            ec.ideology = world.countries[sc].ideology if c else ""
+            world.add_log(f"Peace: ideology of {ec.name if ec else enemy} forced to {ec.ideology}")
+    elif terms["kind"] == "reparations":
+        if ec and c:
+            amount = 40.0 * mult
+            pay = min(ec.treasury, amount)
+            ec.treasury -= pay
+            c.treasury += pay
+            world.add_log(f"Peace: {ec.name if ec else enemy} pays {pay:.0f} reparations to {c.name if c else sc}")
 
     war.active = False
+    # clear guarantees that were consumed by this war
+    if sc:
+        c.guarantees.discard(enemy)
+        ec.guaranteed_by.discard(sc) if ec else None
     for reg in world.regions.values():
         if reg.occupier:
             reg.controlled = False

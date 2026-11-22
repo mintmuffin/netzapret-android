@@ -1,7 +1,7 @@
-"""Diplomacy (relations, alliances) and the autonomous country AI."""
+"""Diplomacy (relations, alliances, guarantees, royal marriages) and AI."""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 from core import clamp
 from world import Country, World
@@ -27,16 +27,66 @@ def offer_alliance(world: World, a: str, b: str) -> bool:
     return True
 
 
+def offer_guarantee(world: World, guarantor: str, target: str) -> bool:
+    """Guarantee a country's independence: if it is attacked, we join the war."""
+    if guarantor == target:
+        return False
+    cg, ct = world.countries[guarantor], world.countries[target]
+    if ct.relation(guarantor) < -40:
+        return False
+    cg.guarantees.add(target)
+    ct.guaranteed_by.add(guarantor)
+    world.add_log(f"Guarantee: {cg.name} guarantees independence of {ct.name}")
+    return True
+
+
+def royal_marriage(world: World, a: str, b: str) -> bool:
+    """Dynastic tie between two countries' houses. Improves relations and can
+    lead to a personal union if one side has no heir (ruling house dies out)."""
+    ca, cb = world.countries[a], world.countries[b]
+    if ca.house == cb.house:
+        return False  # same house already
+    if b in ca.royal_marriages:
+        return False
+    ca.royal_marriages.add(b)
+    cb.royal_marriages.add(a)
+    improve_relations(world, a, b, 15)
+    world.add_log(f"Royal marriage: {ca.name} ({ca.house}) <-> {cb.name} ({cb.house})")
+    return True
+
+
+def check_personal_union(world: World) -> None:
+    """If two countries share a ruling house via royal marriage and one is weak,
+    the stronger may absorb the other into a personal union (vassalization)."""
+    for tag, c in list(world.countries.items()):
+        if not c.ai_enabled or c.player:
+            continue
+        for other_tag in list(c.royal_marriages):
+            oc = world.countries.get(other_tag)
+            if not oc or oc.house != c.house:
+                continue
+            # same house: weaker becomes vassal of stronger
+            if c.manpower > oc.manpower * 1.5 and oc.manpower < 40:
+                if other_tag not in c.vassals:
+                    oc.vassal_of = c.tag
+                    c.vassals.add(other_tag)
+                    world.add_log(
+                        f"Personal union: {oc.name} falls under {c.name} (house {c.house})"
+                    )
+
+
 def tick_ai(world: World) -> None:
-    """Each AI country: manage relations, alliances, wars, border claims and
-    armies. Runs every AI_TICK days."""
+    """Each AI country: relations, alliances, guarantees, royal marriages,
+    wars, border claims and armies. Runs every AI_TICK days."""
     for tag, c in list(world.countries.items()):
         if not c.ai_enabled or c.player:
             continue
         _ai_relations(world, c)
+        _ai_diplomacy(world, c)
         _ai_war_peace(world, c)
         _ai_borders(world, c)
         _ai_armies(world, c)
+    check_personal_union(world)
 
 
 def _ai_relations(world: World, c: Country) -> None:
@@ -56,6 +106,43 @@ def _ai_relations(world: World, c: Country) -> None:
             if w.active and ((w.attacker == c.tag and w.defender == tag) or
                              (w.defender == c.tag and w.attacker == tag)):
                 c.relations[tag] = -100
+
+
+def _ai_diplomacy(world: World, c: Country) -> None:
+    """AI alliance / guarantee / royal marriage offers."""
+    candidates = [
+        (tag, oc) for tag, oc in world.countries.items()
+        if tag != c.tag and not oc.ai_enabled == False
+    ]
+    # allies: befriend strong, same-religion neighbours
+    for tag, oc in candidates:
+        if tag in c.allies:
+            continue
+        rel = c.relation(tag)
+        is_neighbour = any(
+            world.regions[r].owner == tag
+            for r, reg in world.regions.items() if reg.owner == c.tag
+            for nb in world.adjacent_regions(r)
+            if world.regions[nb].owner == tag
+        )
+        if (is_neighbour and rel > 40 and c.religion == oc.religion
+                and world.rng.random() < 0.01):
+            offer_alliance(world, c.tag, tag)
+    # guarantees: protect small same-culture/religion neighbours from bullies
+    for tag, oc in candidates:
+        if tag in c.guarantees or tag in c.guaranteed_by:
+            continue
+        rel = c.relation(tag)
+        if (rel > 50 and c.manpower > oc.manpower * 1.5
+                and (c.religion == oc.religion or c.culture == oc.culture)
+                and world.rng.random() < 0.008):
+            offer_guarantee(world, c.tag, tag)
+    # royal marriages: same religion, good relations
+    for tag, oc in candidates:
+        if tag in c.royal_marriages or oc.house == c.house:
+            continue
+        if c.relation(tag) > 60 and c.religion == oc.religion and world.rng.random() < 0.006:
+            royal_marriage(world, c.tag, tag)
 
 
 def _ai_war_peace(world: World, c: Country) -> None:
@@ -82,20 +169,32 @@ def _ai_war_peace(world: World, c: Country) -> None:
         oc = world.countries[n]
         power_ratio = c.manpower / max(oc.manpower, 1)
         rel = c.relation(n)
+        # guaranteed targets are riskier
+        guarantee_penalty = 20 if n in c.guaranteed_by else 0
         same_rel = 1 if c.religion == oc.religion else 0
-        score = power_ratio * 30 - rel + (1 - same_rel) * 10 + world.rng.uniform(-5, 5)
+        same_cult = 1 if c.culture == oc.culture else 0
+        cb_bonus = 0
+        if not same_cult and not same_rel:
+            cb_bonus = 10  # holy war / ideology war cb available
+        score = (power_ratio * 30 - rel - guarantee_penalty
+                 + (1 - same_rel) * 8 + (1 - same_cult) * 6 + cb_bonus
+                 + world.rng.uniform(-5, 5))
         if score > best_score:
             best_score = score
             best = n
 
-    if best and best_score > 60 and c.treasury > 30 and world.rng.random() < 0.02:
-        from war import start_war
-        start_war(world, c.tag, best, "conquest")
+    from war import start_war
+    if best and best_score > 65 and c.treasury > 30 and world.rng.random() < 0.02:
+        cb = "conquest"
+        if c.religion != world.countries[best].religion:
+            cb = "holy_war"
+        elif c.ideology != world.countries[best].ideology:
+            cb = "ideology_war"
+        start_war(world, c.tag, best, cb)
         c.treasury -= 20
 
 
 def _ai_borders(world: World, c: Country) -> None:
-    # occasionally claim a neighbouring region of same culture/religion or a weak owner
     candidates = []
     for rid, reg in world.regions.items():
         if reg.owner == c.tag:
