@@ -43,9 +43,8 @@ jobs:
         run: |
           TAG=${GITHUB_REF#refs/tags/}
           ASSET=dist/netzapret-windows.zip
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$ASSET" --clobber
-          else
+          set -e
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
-            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$ASSET"
           fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$ASSET" --clobber
