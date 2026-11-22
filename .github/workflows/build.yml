@@ -3,6 +3,7 @@ name: Build portable release
 on:
   push:
     branches: [main, arena/403fee8f-netzapret-android]
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
