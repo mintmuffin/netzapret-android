@@ -37,14 +37,10 @@ jobs:
         with:
           name: netzapret-windows
           path: dist
-      - name: Create or update release and upload asset
+      - name: Create release and upload Windows exe
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/netzapret-windows.zip
+          generate_release_notes: true
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          ASSET=dist/netzapret-windows.zip
-          set -e
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
-          fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$ASSET" --clobber
+          GITHUB_TOKEN: ${{ github.token }}
