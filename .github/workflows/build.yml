@@ -1,41 +1,13 @@
-name: Build portable release
+name: Build Windows release
 
 on:
   push:
-    branches: [main, arena/403fee8f-netzapret-android]
     tags: ['v*']
   workflow_dispatch:
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Build Linux portable zip
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          rm -rf portable && mkdir -p portable/netzapret
-          python -m venv portable/netzapret/.venv
-          portable/netzapret/.venv/bin/python -m pip install --quiet -r requirements.txt
-          cp -r src portable/netzapret/src
-          printf '#!/bin/sh\nDIR="$(cd "$(dirname "$0")" && pwd)"\nexec "$DIR/.venv/bin/python" "$DIR/src/main.py" "$@"\n' > portable/netzapret/netzapret
-          chmod +x portable/netzapret/netzapret
-          cd portable && zip -r netzapret-linux.zip netzapret && mv netzapret-linux.zip ../netzapret-linux.zip
-          ls -la ../netzapret-linux.zip
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: netzapret-linux
-          path: netzapret-linux.zip
-
   build-windows:
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -47,8 +19,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
       - name: Build Windows exe with PyInstaller
-        run: |
-          pyinstaller --onedir --windowed --noconfirm --name netzapret --distpath dist/win --hidden-import=pygame --hidden-import=pygame.locals src/main.py
+        run: pyinstaller --onedir --windowed --noconfirm --name netzapret --distpath dist/win --hidden-import=pygame --hidden-import=pygame.locals src/main.py
       - name: Zip portable folder
         run: cd dist/win && 7z a netzapret-windows.zip netzapret
       - name: Upload artifact
@@ -58,19 +29,23 @@ jobs:
           path: dist/win/netzapret-windows.zip
 
   release:
-    needs: [build-linux, build-windows]
+    needs: build-windows
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/download-artifact@v4
         with:
+          name: netzapret-windows
           path: dist
-      - name: Publish release assets
+      - name: Create or update release and upload asset
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG=${GITHUB_REF#refs/tags/}
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          ASSET=dist/netzapret-windows.zip
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$ASSET" --clobber
+          else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+            gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$ASSET"
           fi
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" dist/*/netzapret-*.zip --clobber
