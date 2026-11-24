@@ -74,7 +74,7 @@ These rules are intentionally described honestly: the room string is not a secur
 
 ## Notes
 
-- Ambient audio starts only after you press a sound button (browser autoplay policy); internet access is needed for the hosted sound clips and Google Fonts.
+- All ten ambient soundscapes are synthesized locally with the Web Audio API, so there are no fragile external audio URLs or sound downloads. Tap a sound once to start it; browser audio permission is requested by that gesture. Google Fonts still need internet access; the page otherwise works without a network connection.
 - Turkish/English preference and chat setup are saved locally in each browser.
 - Chat messages are ordered by Firestore server timestamps, and the client displays the latest 100 messages.
 - The original supplied file was a `.txt` HTML document. This folder is the standalone revamped version; the original is left untouched.
